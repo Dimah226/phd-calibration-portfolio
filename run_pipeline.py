@@ -3,7 +3,7 @@
     python run_pipeline.py
 
 It will (1) load the credit-card fraud dataset, (2) train a baseline
-classifier and show it discriminates well but is poorly calibrated,
+classifier and diagnose its discrimination and calibration,
 (3) compare Platt scaling and isotonic regression, (4) demonstrate the
 classic undersampling probability-correction, and (5) compare a plain
 cross-entropy neural network to one trained with an added differentiable
@@ -11,7 +11,6 @@ calibration loss. All plots and a metrics table are written to results/.
 """
 from __future__ import annotations
 
-import json
 import os
 
 import matplotlib
@@ -31,10 +30,10 @@ from src.calibrate import (
 from src.data import load_data
 from src.differentiable_calibration import train_mlp
 from src.metrics import (
+    adaptive_calibration_error,
     expected_calibration_error,
     plot_reliability,
-    reliability_curve,
-    top_decile_calibration_error,
+    top_fraction_calibration_error,
 )
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
@@ -43,12 +42,14 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 def full_report(name: str, y_true, y_prob, results: dict):
     report = discrimination_report(y_true, y_prob)
     report["ece"] = expected_calibration_error(y_true, y_prob)
-    report["top_decile_ce"] = top_decile_calibration_error(y_true, y_prob)
+    report["adaptive_ece"] = adaptive_calibration_error(y_true, y_prob)
+    report["top_1pct_ce"] = top_fraction_calibration_error(y_true, y_prob, fraction=0.01)
     results[name] = report
     print(
         f"[{name}] AUC-ROC={report['auc_roc']:.4f}  AUC-PR={report['auc_pr']:.4f}  "
-        f"Brier={report['brier']:.5f}  ECE={report['ece']:.5f}  "
-        f"Top-decile CE={report['top_decile_ce']:.5f}"
+        f"LogLoss={report['log_loss']:.5f}  Brier={report['brier']:.5f}  "
+        f"ECE={report['ece']:.5f}  ACE={report['adaptive_ece']:.5f}  "
+        f"Top-1% CE={report['top_1pct_ce']:.5f}"
     )
     return report
 
@@ -63,7 +64,7 @@ def main():
     X_train, X_test, y_train, y_test, _feature_names, source = load_data()
 
     # ---------------------------------------------------------------
-    # 2. Baseline: good discrimination, poor calibration
+    # 2. Baseline: diagnose discrimination and calibration
     # ---------------------------------------------------------------
     baseline = make_base_estimator()
     baseline.fit(X_train, y_train)
@@ -90,18 +91,8 @@ def main():
 
     fig, ax = plt.subplots(figsize=(5, 5))
     plot_reliability(ax, y_test, p_baseline, label="Uncalibrated")
-    ax.plot(
-        *_reliability_xy(y_test, p_platt),
-        marker="s",
-        linewidth=1.5,
-        label="Platt scaling",
-    )
-    ax.plot(
-        *_reliability_xy(y_test, p_isotonic),
-        marker="^",
-        linewidth=1.5,
-        label="Isotonic regression",
-    )
+    plot_reliability(ax, y_test, p_platt, label="Platt scaling")
+    plot_reliability(ax, y_test, p_isotonic, label="Isotonic regression")
     ax.legend(loc="upper left", fontsize=8)
     ax.set_title("Post-hoc calibration methods")
     fig.tight_layout()
@@ -122,12 +113,7 @@ def main():
 
     fig, ax = plt.subplots(figsize=(5, 5))
     plot_reliability(ax, y_test, p_us_raw, label="Undersampled (raw)")
-    ax.plot(
-        *_reliability_xy(y_test, p_us_corrected),
-        marker="s",
-        linewidth=1.5,
-        label="Undersampled (corrected)",
-    )
+    plot_reliability(ax, y_test, p_us_corrected, label="Undersampled (corrected)")
     ax.legend(loc="upper left", fontsize=8)
     ax.set_title(f"Undersampling probability correction (beta={beta:.3f})")
     fig.tight_layout()
@@ -137,48 +123,40 @@ def main():
     # ---------------------------------------------------------------
     # 5. Differentiable calibration loss (neural network)
     # ---------------------------------------------------------------
-    X_us_nn, y_us_nn, _ = undersample(X_train, y_train, neg_pos_ratio=10.0, random_state=1)
+    X_us_nn, y_us_nn, beta_nn = undersample(
+        X_train, y_train, neg_pos_ratio=10.0, random_state=1
+    )
     scaler = StandardScaler().fit(X_us_nn)
     X_us_nn_scaled = scaler.transform(X_us_nn)
     X_test_scaled = scaler.transform(X_test)
 
-    _, p_mlp_plain = train_mlp(
+    _, p_mlp_plain_sampled = train_mlp(
         X_us_nn_scaled, y_us_nn, X_test_scaled, calibration_weight=0.0, n_epochs=25
     )
+    p_mlp_plain = correct_undersampled_probabilities(p_mlp_plain_sampled, beta_nn)
     full_report("mlp_cross_entropy_only", y_test, p_mlp_plain, results)
 
-    _, p_mlp_calibrated = train_mlp(
+    _, p_mlp_calibrated_sampled = train_mlp(
         X_us_nn_scaled, y_us_nn, X_test_scaled, calibration_weight=0.5, n_epochs=25
+    )
+    p_mlp_calibrated = correct_undersampled_probabilities(
+        p_mlp_calibrated_sampled, beta_nn
     )
     full_report("mlp_with_soft_ece_loss", y_test, p_mlp_calibrated, results)
 
     fig, ax = plt.subplots(figsize=(5, 5))
     plot_reliability(ax, y_test, p_mlp_plain, label="Cross-entropy only")
-    ax.plot(
-        *_reliability_xy(y_test, p_mlp_calibrated),
-        marker="s",
-        linewidth=1.5,
-        label="Cross-entropy + soft-ECE loss",
+    plot_reliability(
+        ax, y_test, p_mlp_calibrated, label="Cross-entropy + soft-ECE loss"
     )
     ax.legend(loc="upper left", fontsize=8)
-    ax.set_title("Differentiable calibration loss (neural network)")
+    ax.set_title("Differentiable loss after equal prior correction")
     fig.tight_layout()
     fig.savefig(os.path.join(RESULTS_DIR, "04_differentiable_calibration_loss.png"), dpi=150)
     plt.close(fig)
 
-    # ---------------------------------------------------------------
-    # Summary
-    # ---------------------------------------------------------------
-    with open(os.path.join(RESULTS_DIR, "metrics_summary.json"), "w") as fh:
-        json.dump({"data_source": source, "metrics": results}, fh, indent=2)
-
     write_summary_markdown(source, results)
     print(f"\nAll plots and metrics written to {RESULTS_DIR}/")
-
-
-def _reliability_xy(y_true, y_prob, n_bins: int = 15):
-    confs, accs, _ = reliability_curve(y_true, y_prob, n_bins=n_bins)
-    return confs, accs
 
 
 def write_summary_markdown(source: str, results: dict):
@@ -194,14 +172,15 @@ def write_summary_markdown(source: str, results: dict):
     lines = [
         f"# Results\n",
         f"Data source: `{source}`\n",
-        "| Method | AUC-ROC | AUC-PR | Brier | ECE | Top-decile CE |",
-        "|---|---|---|---|---|---|",
+        "| Method | AUC-ROC | AUC-PR | Log loss | Brier | ECE | ACE | Top-1% CE |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for label, key in rows:
         r = results[key]
         lines.append(
             f"| {label} | {r['auc_roc']:.4f} | {r['auc_pr']:.4f} | "
-            f"{r['brier']:.5f} | {r['ece']:.5f} | {r['top_decile_ce']:.5f} |"
+            f"{r['log_loss']:.5f} | {r['brier']:.5f} | {r['ece']:.5f} | "
+            f"{r['adaptive_ece']:.5f} | {r['top_1pct_ce']:.5f} |"
         )
     with open(os.path.join(RESULTS_DIR, "summary.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")

@@ -1,20 +1,27 @@
-# Probability Calibration in Imbalanced Fraud Detection
+# Exploring Probability Calibration in Imbalanced Fraud Detection
 
-A small, self-contained project on **probability calibration in imbalanced
-binary classification**, using credit-card fraud detection as the running
-example: a model can separate fraud from genuine transactions very well
-(high AUC-ROC / AUC-PR) while its output scores are still poor estimates of
-the true probability of fraud. That distinction — discrimination vs.
-calibration — is the practical motivation for this repository, and for my
-interest in **differentiable calibration objectives that can be trained
-directly into a classifier**, rather than bolted on afterwards.
+This is a small learning project I built while trying to understand
+**probability calibration in imbalanced classification**. I use credit-card
+fraud detection because it is close to my current work on health-insurance
+fraud, while still relying on a public dataset.
+
+The question behind the repository is simple: if a model ranks fraud cases
+well, can its score really be read as a probability? I first tried standard
+post-hoc calibration, then reproduced the prior correction needed after
+undersampling, and finally implemented a simple differentiable soft-ECE loss.
+The last part is exploratory. It is not proposed as a new method, and the
+results show trade-offs rather than a clean win.
+
+I kept the code in separate files so that I could test each part, but the
+whole experiment still runs from one script. My decisions and unsuccessful
+attempts are recorded in [EXPERIMENT_NOTES.md](EXPERIMENT_NOTES.md).
 
 The project builds up in four steps:
 
-1. **Diagnose** the problem: train a standard classifier and show it is
-   well-discriminating but poorly calibrated (reliability diagram, Expected
-   Calibration Error, and a top-decile calibration error focused on the
-   high-score region where investigation decisions actually happen).
+1. **Diagnose** the problem: train a standard classifier and assess
+   discrimination separately from calibration (reliability diagram, Expected
+   Calibration Error, adaptive ECE, and a top-1% calibration gap focused on
+   the high-score region where investigation decisions actually happen).
 2. **Fix it after training**, with the two classic post-hoc methods: Platt
    scaling and isotonic regression.
 3. **Fix a specific, well-known failure mode**: training on an
@@ -24,8 +31,11 @@ The project builds up in four steps:
    Bontempi (2015).
 4. **Fix it during training instead**: a small PyTorch classifier is
    trained with an added *differentiable* soft-ECE loss, jointly with the
-   usual cross-entropy loss, and compared to a plain cross-entropy baseline
-   under the same class-imbalance shift as in step 3.
+   usual cross-entropy loss, and compared to a plain cross-entropy baseline.
+   Because both networks are trained on the same undersampled data, the same
+   analytical prior correction is applied to both before evaluation on the
+   original population. This keeps the comparison focused on the training
+   objective rather than on an avoidable prior-probability shift.
 
 ## Dataset
 
@@ -46,77 +56,81 @@ The raw CSV is not included in this repository (file size and licensing).
 3. fall back to a synthetic dataset with a matching imbalance ratio, so the
    pipeline always runs end to end even without internet access.
 
-Results in `results/` were produced with the real dataset (see
-`results/metrics_summary.json`, field `data_source`).
+Results in `results/` were produced with the real dataset (see the data
+source noted at the top of `results/summary.md`).
 
-## Method notes
+## What I implemented
 
 - **Baseline model**: a `RandomForestClassifier`, trained without any
   class-balancing, on purpose — it is a good example of a model that
   discriminates well but is not a probability estimator out of the box.
-- **Calibration error metrics**: alongside the standard Expected Calibration
-  Error, the pipeline reports a *top-decile* calibration error, restricted
-  to the highest 10% of predicted scores. In an imbalanced setting the
-  standard ECE is dominated by the very large number of low-score genuine
-  transactions and can look small even when the high scores that actually
-  drive investigation are unreliable — the practical concern behind
-  Guilbert, Caelen, Chirita & Saerens (2024).
+- **Calibration metrics**: no single binned metric is treated as definitive.
+  The pipeline reports log loss, Brier score, equal-width ECE, equal-mass
+  adaptive ECE (ACE), and an operational *top-1% calibration gap*. In an
+  imbalanced setting, global ECE is dominated by low-score genuine
+  transactions and can look small even when the highest scores that drive
+  investigation are unreliable. Reporting several views also makes binning
+  sensitivity visible rather than hiding it.
 - **Undersampling correction**: `correct_undersampled_probabilities` in
   `src/calibrate.py` implements the closed-form correction for training on
   an undersampled majority class (Elkan, 2001; used for fraud detection in
   Dal Pozzolo, Caelen, Johnson & Bontempi, 2015).
-- **Differentiable calibration loss**: `soft_ece_loss` in
+- **Experimental differentiable calibration loss**: `soft_ece_loss` in
   `src/differentiable_calibration.py` is a soft-binned relaxation of ECE —
   each example gets a smooth, Gaussian-kernel membership across probability
   bins instead of being hard-assigned to one, so the objective is
   differentiable and can be minimised jointly with cross-entropy. This is a
   simplified, from-scratch version of ideas from the differentiable /
   trainable calibration literature (e.g. Kumar et al., 2018; Karandikar et
-  al., 2021), applied here to a binary setting as a first step; extending
-  this kind of objective to the multi-class setting, where per-class
-  behaviour can be hidden by aggregate calibration measures, is the
-  question I want to pursue further.
+  al., 2021). My implementation is only a binary illustration and should not
+  be read as a reproduction of either paper.
 
 ## Results
 
 All numbers below are from a real run on the full 284,807-transaction
-dataset (see `results/metrics_summary.json`, field `data_source`).
-Discrimination (AUC-ROC / AUC-PR) stays roughly stable across methods, while
-calibration error (ECE, top-decile CE) responds very differently depending
-on what caused the miscalibration in the first place.
+dataset (see `results/summary.md`, regenerated by `run_pipeline.py`).
+Ranking discrimination, especially AUC-ROC, stays broadly similar across
+several methods, while calibration metrics respond very differently depending
+on what caused the miscalibration in the first place. AUC-PR also shows that
+seemingly similar ROC performance can hide meaningful rare-class differences.
 
-| Method | AUC-ROC | AUC-PR | Brier | ECE | Top-decile CE |
-|---|---|---|---|---|---|
-| Baseline (uncalibrated) | 0.9704 | 0.8089 | 0.00051 | 0.00030 | 0.00084 |
-| Platt scaling | 0.9716 | 0.8065 | 0.00053 | 0.00016 | 0.00246 |
-| Isotonic regression | 0.9696 | 0.8051 | 0.00050 | 0.00015 | 0.00012 |
-| Undersampled (raw) | 0.9701 | 0.6425 | 0.00461 | 0.03050 | 0.15865 |
-| Undersampled (Elkan-corrected) | 0.9701 | 0.6425 | 0.00095 | 0.00075 | 0.00408 |
-| MLP, cross-entropy only | 0.9705 | 0.6866 | 0.00213 | 0.01152 | 0.07320 |
-| MLP, cross-entropy + soft-ECE | 0.9688 | 0.6901 | 0.00202 | 0.01119 | 0.07090 |
+| Method | AUC-ROC | AUC-PR | Log loss | Brier | ECE | ACE | Top-1% CE |
+|---|---|---|---|---|---|---|---|
+| Baseline (uncalibrated) | 0.9704 | 0.8089 | 0.00333 | 0.00051 | 0.00030 | 0.00025 | 0.00360 |
+| Platt scaling | 0.9716 | 0.8065 | 0.00356 | 0.00053 | 0.00016 | 0.00048 | 0.01609 |
+| Isotonic regression | 0.9696 | 0.8051 | 0.00321 | 0.00050 | 0.00015 | 0.00019 | 0.00411 |
+| Undersampled (raw) | 0.9701 | 0.6425 | 0.03898 | 0.00461 | 0.03050 | 0.03050 | 0.38708 |
+| Undersampled (Elkan-corrected) | 0.9701 | 0.6425 | 0.00780 | 0.00095 | 0.00075 | 0.00050 | 0.04041 |
+| MLP, cross-entropy only* | 0.9705 | 0.6866 | 0.00486 | 0.00070 | 0.00043 | 0.00010 | 0.00520 |
+| MLP, cross-entropy + soft-ECE* | 0.9688 | 0.6901 | 0.00485 | 0.00069 | 0.00050 | 0.00015 | 0.00139 |
+
+\*Both MLP outputs receive the same analytical correction for the training
+undersampling prior before these metrics are computed.
 
 A few things worth noting rather than glossing over:
 
 - The untouched baseline is already fairly well calibrated on average here
   (a Random Forest's predicted probabilities are themselves bagged empirical
   frequencies) -- the textbook "accurate but overconfident" failure is not
-  automatic, it depends on the model and how it was trained. **Naive
-  undersampling is where the real damage happens**: ECE jumps roughly
-  40x and top-decile CE almost 200x, and the closed-form correction removes
-  nearly all of it.
-- Platt scaling actually *increases* top-decile calibration error here even
+  automatic; it depends on the model and how it was trained. **Naive
+  undersampling is where the real damage happens**: both ECE and the top-1%
+  calibration gap increase by roughly two orders of magnitude. The analytical
+  correction removes most, though not all, of that error.
+- Platt scaling actually *increases* the top-1% calibration gap here even
   though it improves overall ECE -- its parametric sigmoid shape does not
   fit this particular tail well, while the non-parametric isotonic
   regression improves both. A reminder that "apply a calibration method"
   is not a single well-defined fix.
-- The differentiable soft-ECE loss gives a small, consistent improvement in
-  calibration at essentially no cost to discrimination, but the effect is
-  far more modest than the undersampling correction, and it was easy to make
-  much worse: pushing its weight higher in early experiments collapsed
-  discrimination entirely (a shortcut where the network learns to predict a
-  near-constant, "trivially calibrated" score). Getting a differentiable
-  calibration objective to behave well, and extending it to the multi-class
-  setting, is precisely the open problem this repository stops short of.
+- After controlling for the sampling prior, the differentiable loss produces
+  a clear improvement in the top-1% calibration gap (0.00520 to 0.00139) and
+  tiny improvements in log loss and Brier score. It does **not** improve every
+  metric: equal-width ECE and ACE become slightly worse, while AUC-ROC falls
+  modestly. This metric-dependent trade-off is more informative than claiming
+  a universal calibration gain. Higher loss weights also made discrimination
+  collapse in preliminary runs, illustrating the near-constant-prediction
+  shortcut available to poorly balanced calibration objectives. Designing an
+  objective that behaves robustly, especially in the multiclass case, is the
+  open problem this repository deliberately stops short of solving.
 
 ### Baseline: good discrimination, already-tight calibration
 
@@ -130,7 +144,7 @@ A few things worth noting rather than glossing over:
 
 ![Undersampling correction](results/03_undersampling_correction.png)
 
-### A differentiable calibration loss, trained jointly with cross-entropy
+### My soft-ECE experiment, trained jointly with cross-entropy
 
 ![Differentiable calibration loss](results/04_differentiable_calibration_loss.png)
 
@@ -141,8 +155,30 @@ pip install -r requirements.txt
 python run_pipeline.py
 ```
 
+Run the unit tests with only the Python standard-library test runner:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 Optional: download `creditcard.csv` from Kaggle and place it in `data/` to
 run on a local copy instead of fetching from OpenML.
+
+## Current limitations
+
+- The main experiment uses a single train/test split and a single random seed.
+  Repeated runs would be needed before drawing strong conclusions.
+- The soft-ECE weight (`0.5`) is an exploratory choice, not the result of a
+  formal hyperparameter search.
+- Binned calibration metrics depend on the binning rule. This is why I report
+  both equal-width ECE and equal-mass ACE, but neither is a ground truth.
+- The neural-network experiment is binary, whereas the PhD topic that
+  motivated this work is multiclass.
+- The analytical prior correction assumes random majority-class
+  undersampling. It does not automatically apply to every resampling scheme
+  or to general dataset shift.
+- I have not yet added repeated-seed uncertainty intervals or multiclass
+  classwise calibration diagnostics. These are the next logical extensions.
 
 ## References
 

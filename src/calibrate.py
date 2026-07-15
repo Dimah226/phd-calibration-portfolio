@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+from sklearn.metrics import average_precision_score, brier_score_loss, log_loss, roc_auc_score
 
 
 def make_base_estimator(random_state: int = 42) -> RandomForestClassifier:
@@ -25,6 +25,7 @@ def discrimination_report(y_true, y_prob) -> dict:
         "auc_roc": roc_auc_score(y_true, y_prob),
         "auc_pr": average_precision_score(y_true, y_prob),
         "brier": brier_score_loss(y_true, y_prob),
+        "log_loss": log_loss(y_true, np.clip(y_prob, 1e-12, 1 - 1e-12)),
     }
 
 
@@ -46,12 +47,9 @@ def undersample(X, y, neg_pos_ratio: float = 5.0, random_state: int = 42):
 
 
 def correct_undersampled_probabilities(p_sampled: np.ndarray, beta: float) -> np.ndarray:
-    """Elkan (2001) prior correction, as used in Dal Pozzolo, Caelen, Johnson &
-    Bontempi (2015), "Calibrating Probability with Undersampling for Unbalanced
-    Classification". Maps probabilities estimated on an undersampled training
-    set back to the probability scale of the true, imbalanced population.
-
-    beta is the fraction of the majority class kept during undersampling.
+    """Rescale probabilities from a model trained on undersampled data back
+    to the true class prior (Elkan 2001, used for fraud by Dal Pozzolo &
+    Caelen 2015). beta = fraction of the majority class kept.
     """
     p_sampled = np.clip(p_sampled, 1e-12, 1 - 1e-12)
     return p_sampled / (p_sampled + (1 - p_sampled) / beta)

@@ -1,11 +1,6 @@
-"""A small PyTorch classifier trained with and without a differentiable,
-soft-binned calibration loss added to the standard cross-entropy loss.
-
-This is a simplified, from-scratch illustration of the idea motivating this
-portfolio: instead of calibrating a classifier only after training (Platt
-scaling, isotonic regression), fold a calibration objective directly into
-training so the network learns to be accurate *and* calibrated at once.
-"""
+"""Small MLP trained with plain cross-entropy vs cross-entropy + a soft-ECE
+term, to see if pushing calibration during training helps instead of fixing
+it after the fact (Platt/isotonic)."""
 from __future__ import annotations
 
 import torch
@@ -33,15 +28,13 @@ def soft_ece_loss(
     n_bins: int = 10,
     temperature: float = 0.05,
 ) -> torch.Tensor:
-    """A differentiable relaxation of the Expected Calibration Error.
+    """Soft version of ECE so it's differentiable.
 
-    Standard ECE is non-differentiable because it hard-assigns each example
-    to a probability bin. Here, each example is given a *soft* membership in
-    every bin via a Gaussian kernel centred on its predicted probability --
-    similar in spirit to soft-binning approaches in the differentiable
-    calibration literature (e.g. Kumar et al., 2018; Karandikar et al.,
-    2021). The result is smooth in the network's parameters and can be
-    minimised jointly with the usual classification loss.
+    Normal ECE hard-assigns each point to one bin, which has zero gradient.
+    Here each point gets a soft (Gaussian) weight into every bin instead, so
+    we can just add this to the loss and backprop through it. Same idea as
+    the soft-binning tricks used in some of the differentiable-calibration
+    papers (Kumar et al. 2018, Karandikar et al. 2021).
     """
     bin_centers = torch.linspace(0.0, 1.0, n_bins, device=probs.device)
     diff = probs.unsqueeze(1) - bin_centers.unsqueeze(0)  # (N, n_bins)
@@ -66,12 +59,8 @@ def train_mlp(
     lr: float = 1e-3,
     seed: int = 42,
 ):
-    """Train the MLP with BCE loss, optionally plus `calibration_weight` times
-    the soft-ECE loss. calibration_weight=0.0 reproduces plain cross-entropy
-    training; a positive value is the differentiable-calibration variant.
-
-    Returns the trained model and its predicted probabilities on X_val.
-    """
+    """Train the MLP with BCE, plus calibration_weight * soft-ECE if > 0.
+    Returns the model and its predicted probabilities on X_val."""
     torch.manual_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
