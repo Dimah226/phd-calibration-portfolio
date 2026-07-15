@@ -1,10 +1,10 @@
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-
 # Raw dataset (download separately, see README) -- too large for git,
 # and redistribution is best left to the original Kaggle/OpenML source.
 data/*.csv
 
+# Local Python environments and generated cache files.
 .venv/
 venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
