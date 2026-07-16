@@ -8,3 +8,8 @@ venv/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# Personal learning notes: keep locally, publish only the main README.
+*.md
+!README.md
+LICENSE
