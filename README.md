@@ -15,8 +15,7 @@ results show trade-offs rather than a clean win.
 All code is contained in a single, step-by-step notebook with data download,
 intermediate tables, plots and explanations. Open
 [calibration_walkthrough.ipynb](calibration_walkthrough.ipynb) in VS Code or
-Jupyter and run the cells from top to bottom. My decisions and unsuccessful
-attempts are recorded in [EXPERIMENT_NOTES.md](EXPERIMENT_NOTES.md).
+Jupyter and run the cells from top to bottom.
 
 The project builds up in four steps:
 
@@ -58,8 +57,8 @@ The data-loading cell will, in order:
 3. fall back to a synthetic dataset with a matching imbalance ratio, so the
    pipeline always runs end to end even without internet access.
 
-Results in `results/` were produced with the real dataset (see the data
-source noted at the top of `results/summary.md`).
+Results in `results/` were produced with the real dataset; the source is also
+displayed by the data-loading cell in the notebook.
 
 ## What I implemented
 
@@ -90,7 +89,7 @@ source noted at the top of `results/summary.md`).
 ## Results
 
 All numbers below are from a real run on the full 284,807-transaction
-dataset (see `results/summary.md` for the saved reference run).
+dataset (see `results/notebook_metrics.csv` for the saved reference run).
 Ranking discrimination, especially AUC-ROC, stays broadly similar across
 several methods, while calibration metrics respond very differently depending
 on what caused the miscalibration in the first place. AUC-PR also shows that
@@ -189,7 +188,3 @@ run on a local copy instead of fetching from OpenML.
   Measures for Neural Networks from Kernel Mean Embeddings.* ICML.
 - Karandikar, A., et al. (2021). *Soft Calibration Objectives for Neural
   Networks.* NeurIPS.
-
-## License
-
-MIT (see [LICENSE](LICENSE)).
